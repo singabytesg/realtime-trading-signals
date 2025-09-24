@@ -1,0 +1,18 @@
+{
+  "generated_at": "2025-09-24T19:49:34.503549",
+  "market_data": {
+    "start_date": "2025-08-25T08:30:00+00:00",
+    "end_date": "2025-09-24T08:30:00+00:00",
+    "total_periods": 1441,
+    "asset": "ETH"
+  },
+  "strategy": {
+    "name": "Winning_77pct_Strategy",
+    "signals_generated": 48
+  },
+  "result_files": [
+    "corrected_results_conservative_2pct_20250924_194934.json",
+    "corrected_results_moderate_5pct_20250924_194934.json",
+    "corrected_results_aggressive_10pct_20250924_194934.json"
+  ]
+}

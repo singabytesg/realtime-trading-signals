@@ -1,0 +1,223 @@
+{
+  "strategy_name": "Enhanced_BEAR_TREND_LOW_VOL_InstrumentOptimized",
+  "fitness_score": 0.736457109218155,
+  "parameters": {
+    "rsi_oversold": 30,
+    "rsi_overbought": 75,
+    "macd_fast": 12,
+    "macd_slow": 21,
+    "macd_signal": 7,
+    "sma_short": 15,
+    "sma_long": 20,
+    "atr_period": 10,
+    "atr_threshold": 70,
+    "high_vol_threshold": 3.5,
+    "expected_move_threshold": 4.0
+  },
+  "statistics": {
+    "total_trades": 9,
+    "winning_trades": 7,
+    "losing_trades": 2,
+    "win_rate_pct": 77.77777777777779,
+    "total_return_pct": 0.1820448351890991,
+    "apr": 2.7685985351675493,
+    "sharpe_ratio": 1.8633858330755042,
+    "max_drawdown_pct": 0.5599549548119042,
+    "final_capital": 10018.20448351891,
+    "avg_win": 1.0618523690375163,
+    "avg_loss": -2.8,
+    "avg_premium_cost": 2.8
+  },
+  "instrument_stats": {
+    "7D_5PCT": {
+      "count": 9,
+      "wins": 7,
+      "total_pnl": 1.8329665832626132,
+      "avg_pnl": 0.20366295369584592,
+      "win_rate": 77.77777777777779
+    }
+  },
+  "dsl": {
+    "dsl_version": "2.0",
+    "description": "Enhanced BEAR_TREND_LOW_VOL strategy with dynamic instrument selection",
+    "constants": {
+      "rsi_oversold": 30,
+      "rsi_overbought": 75,
+      "macd_fast": 12,
+      "macd_slow": 21,
+      "macd_signal": 7,
+      "sma_short_period": 15,
+      "sma_long_period": 20,
+      "atr_period": 10,
+      "atr_threshold": 70,
+      "high_vol_threshold": 3.5,
+      "expected_move_threshold": 4.0
+    },
+    "indicators": [
+      {
+        "name": "rsi_main",
+        "type": "rsi",
+        "params": {
+          "length": 14,
+          "column": "close"
+        },
+        "outputs": {
+          "primary_output_column": "rsi_value"
+        }
+      },
+      {
+        "name": "macd_main",
+        "type": "macd",
+        "params": {
+          "fast": "@macd_fast",
+          "slow": "@macd_slow",
+          "signal": "@macd_signal",
+          "column": "close"
+        },
+        "outputs": {
+          "primary_output_column": "macd_line",
+          "component_output_map": {
+            "MACD_12_21_7": "macd_line",
+            "MACDs_12_21_7": "macd_signal",
+            "MACDh_12_21_7": "macd_hist"
+          }
+        }
+      },
+      {
+        "name": "sma_short",
+        "type": "sma",
+        "params": {
+          "length": "@sma_short_period",
+          "column": "close"
+        },
+        "outputs": {
+          "primary_output_column": "sma_short"
+        }
+      },
+      {
+        "name": "sma_long",
+        "type": "sma",
+        "params": {
+          "length": "@sma_long_period",
+          "column": "close"
+        },
+        "outputs": {
+          "primary_output_column": "sma_long"
+        }
+      },
+      {
+        "name": "atr",
+        "type": "atr",
+        "params": {
+          "length": "@atr_period"
+        },
+        "outputs": {
+          "primary_output_column": "atr_value"
+        }
+      }
+    ],
+    "signal_rules": [
+      {
+        "rule_name": "strong_bear_breakdown",
+        "conditions_group": {
+          "operator": "AND",
+          "conditions": [
+            {
+              "series1": "close",
+              "operator": "crosses_below",
+              "series2_or_value": "sma_short"
+            },
+            {
+              "series1": "sma_short",
+              "operator": "<",
+              "series2_or_value": "sma_long"
+            },
+            {
+              "series1": "macd_hist",
+              "operator": "<",
+              "series2_or_value": -0.5
+            },
+            {
+              "series1": "rsi_value",
+              "operator": "<",
+              "series2_or_value": 40
+            }
+          ]
+        },
+        "action_on_true": {
+          "signal_type": "PUT",
+          "strength": -7
+        },
+        "instrument_selection": {
+          "time_horizon_days": 7,
+          "volatility_threshold": "@high_vol_threshold"
+        },
+        "description": "Strong bearish breakdown with optimal instrument"
+      },
+      {
+        "rule_name": "moderate_bear_signal",
+        "conditions_group": {
+          "operator": "AND",
+          "conditions": [
+            {
+              "series1": "macd_line",
+              "operator": "crosses_below",
+              "series2_or_value": "macd_signal"
+            },
+            {
+              "series1": "close",
+              "operator": "<",
+              "series2_or_value": "sma_long"
+            },
+            {
+              "series1": "atr_value",
+              "operator": "<",
+              "series2_or_value": "@atr_threshold"
+            }
+          ]
+        },
+        "action_on_true": {
+          "signal_type": "PUT",
+          "strength": -3
+        },
+        "instrument_selection": {
+          "time_horizon_days": 3,
+          "volatility_threshold": "@high_vol_threshold"
+        },
+        "description": "Moderate bear signal with conservative instrument"
+      },
+      {
+        "rule_name": "oversold_bounce",
+        "conditions_group": {
+          "operator": "AND",
+          "conditions": [
+            {
+              "series1": "rsi_value",
+              "operator": "<",
+              "series2_or_value": "@rsi_oversold"
+            },
+            {
+              "series1": "macd_line",
+              "operator": "crosses_above",
+              "series2_or_value": "macd_signal"
+            }
+          ]
+        },
+        "action_on_true": {
+          "signal_type": "CALL",
+          "strength": 3
+        },
+        "instrument_selection": {
+          "time_horizon_days": 3,
+          "volatility_threshold": "@high_vol_threshold"
+        },
+        "description": "Oversold bounce with appropriate instrument"
+      }
+    ],
+    "default_action_on_no_match": {
+      "signal_type": "NEUTRAL",
+      "strength": 0,
+      "instrument_type": "3D_5PCT"
+    }
+  }
+}
