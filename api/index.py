@@ -224,20 +224,39 @@ class SimpleDSLExecutor:
     def process_candle_close(self, close_price: float, timestamp: datetime) -> Optional[TradingSignal]:
         self.price_history.append(close_price)
 
+        logger.info(f"   📝 Added price ${close_price:.2f} to history. Total candles: {len(self.price_history)}")
+
         if len(self.price_history) < 20:
+            logger.info(f"   ⏳ Not enough candles for analysis. Need 20, have {len(self.price_history)}. Skipping...")
+            logger.info("=" * 80)
             return None
 
         # Calculate indicators
+        logger.info(f"   🧮 Calculating technical indicators...")
+
         sma_short = self.indicators.sma(self.price_history, self.winning_strategy["constants"]["sma_short_period"])
         sma_long = self.indicators.sma(self.price_history, self.winning_strategy["constants"]["sma_long_period"])
         rsi = self.indicators.rsi(self.price_history)
         macd_data = self.indicators.macd(self.price_history)
-
-        current_price = close_price
         volatility = self._calculate_volatility()
 
+        current_price = close_price
+
+        # Log all calculated indicators
+        logger.info(f"   📊 INDICATORS CALCULATED:")
+        logger.info(f"      • Current Price: ${current_price:.2f}")
+        logger.info(f"      • SMA Short (15): ${sma_short:.2f}")
+        logger.info(f"      • SMA Long (20): ${sma_long:.2f}")
+        logger.info(f"      • RSI: {rsi:.1f}")
+        logger.info(f"      • MACD Line: {macd_data['macd']:.4f}")
+        logger.info(f"      • MACD Signal: {macd_data['signal']:.4f}")
+        logger.info(f"      • MACD Histogram: {macd_data['histogram']:.4f}")
+        logger.info(f"      • Volatility: {volatility:.2f}%")
+
         # Check each rule
-        for rule in self.winning_strategy["rules"]:
+        logger.info(f"   🔍 Evaluating {len(self.winning_strategy['rules'])} DSL rules...")
+
+        for i, rule in enumerate(self.winning_strategy["rules"], 1):
             indicators_dict = {
                 "close": current_price,
                 "sma_short": sma_short,
@@ -249,7 +268,18 @@ class SimpleDSLExecutor:
                 "volatility": volatility
             }
 
-            if self._evaluate_rule(rule, indicators_dict):
+            logger.info(f"   📋 Rule {i}: '{rule['name']}'")
+
+            # Log each condition check
+            rule_passed = True
+            for j, condition in enumerate(rule["conditions"], 1):
+                condition_result = self._evaluate_condition(condition, indicators_dict)
+                status = "✅ PASS" if condition_result else "❌ FAIL"
+                logger.info(f"      Condition {j}: {condition} → {status}")
+                if not condition_result:
+                    rule_passed = False
+
+            if rule_passed:
                 # Calculate expected move percentage
                 expected_move_pct = abs(macd_data["histogram"]) * 2 + (volatility / 10)
 
@@ -261,6 +291,13 @@ class SimpleDSLExecutor:
                     high_vol_threshold=self.winning_strategy["constants"]["high_vol_threshold"]
                 )
 
+                logger.info(f"   🎯 SIGNAL GENERATED!")
+                logger.info(f"      • Rule: {rule['name']}")
+                logger.info(f"      • Signal: {rule['signal']['type']} (strength: {rule['signal']['strength']})")
+                logger.info(f"      • Expected Move: {expected_move_pct:.2f}%")
+                logger.info(f"      • Optimal Instrument: {optimal_instrument}")
+                logger.info("=" * 80)
+
                 return TradingSignal(
                     timestamp=timestamp,
                     signal_type=rule["signal"]["type"],
@@ -271,7 +308,11 @@ class SimpleDSLExecutor:
                     confidence=0.8,
                     expected_move=expected_move_pct
                 )
+            else:
+                logger.info(f"      → Rule failed. Moving to next rule.")
 
+        logger.info(f"   ❌ No signals generated. All {len(self.winning_strategy['rules'])} rules failed.")
+        logger.info("=" * 80)
         return None
 
     def _evaluate_rule(self, rule: Dict, indicators: Dict) -> bool:
@@ -358,7 +399,14 @@ class DeribitWebSocketClient:
                         timestamp_ms, open_price, high, low, close_price, volume = candle_data[:6]
                         candle_time = datetime.fromtimestamp(timestamp_ms / 1000)
 
-                        logger.info(f"📊 New 30-min candle: {candle_time} | Close: ${close_price:.2f}")
+                        # Detailed candle logging
+                        logger.info("=" * 80)
+                        logger.info(f"📊 NEW 30-MIN CANDLE RECEIVED")
+                        logger.info(f"   📅 Time: {candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                        logger.info(f"   💰 OHLC: Open=${open_price:.2f} | High=${high:.2f} | Low=${low:.2f} | Close=${close_price:.2f}")
+                        logger.info(f"   📈 Volume: {volume:,.0f}")
+                        logger.info(f"   🔄 Processing DSL strategy...")
+
                         await self.signal_callback(close_price, candle_time)
 
         except websockets.exceptions.ConnectionClosed:
