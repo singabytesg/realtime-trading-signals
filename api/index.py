@@ -16,6 +16,7 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass, asdict
 from collections import deque
+from datetime import timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Real-time Trading Signals", version="1.0.0")
 
 # ==================== CORE MODELS ====================
+
+@dataclass
+class Candle:
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
 
 @dataclass
 class TradingSignal:
@@ -211,8 +221,8 @@ class SimpleDSLExecutor:
             ]
         }
 
-    def process_price_update(self, price: float, timestamp: datetime) -> Optional[TradingSignal]:
-        self.price_history.append(price)
+    def process_candle_close(self, close_price: float, timestamp: datetime) -> Optional[TradingSignal]:
+        self.price_history.append(close_price)
 
         if len(self.price_history) < 20:
             return None
@@ -223,7 +233,7 @@ class SimpleDSLExecutor:
         rsi = self.indicators.rsi(self.price_history)
         macd_data = self.indicators.macd(self.price_history)
 
-        current_price = price
+        current_price = close_price
         volatility = self._calculate_volatility()
 
         # Check each rule
@@ -315,18 +325,18 @@ class DeribitWebSocketClient:
             self.is_connected = True
             logger.info("Connected to Deribit WebSocket")
 
-            # Subscribe to ETH perpetual price updates
+            # Subscribe to ETH perpetual 30-minute candles
             subscribe_msg = {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "public/subscribe",
                 "params": {
-                    "channels": ["ticker.ETH-PERPETUAL.100ms"]
+                    "channels": ["chart.trades.ETH-PERPETUAL.30"]
                 }
             }
 
             await self.websocket.send(json.dumps(subscribe_msg))
-            logger.info("Subscribed to ETH-PERPETUAL ticker")
+            logger.info("Subscribed to ETH-PERPETUAL 30-min candles")
 
         except Exception as e:
             logger.error(f"Failed to connect to Deribit: {e}")
@@ -341,11 +351,15 @@ class DeribitWebSocketClient:
                 data = json.loads(message)
 
                 if "params" in data and "data" in data["params"]:
-                    ticker_data = data["params"]["data"]
-                    price = ticker_data.get("last_price")
+                    candle_data = data["params"]["data"]
 
-                    if price:
-                        await self.signal_callback(price, datetime.now())
+                    # Handle candle data: [timestamp, open, high, low, close, volume]
+                    if isinstance(candle_data, list) and len(candle_data) >= 5:
+                        timestamp_ms, open_price, high, low, close_price, volume = candle_data[:6]
+                        candle_time = datetime.fromtimestamp(timestamp_ms / 1000)
+
+                        logger.info(f"📊 New 30-min candle: {candle_time} | Close: ${close_price:.2f}")
+                        await self.signal_callback(close_price, candle_time)
 
         except websockets.exceptions.ConnectionClosed:
             logger.warning("Deribit WebSocket connection closed")
@@ -375,23 +389,23 @@ class SignalManager:
             "total_pnl": 0.0
         }
 
-    async def process_price_update(self, price: float, timestamp: datetime):
-        self.current_price = price
+    async def process_candle_close(self, close_price: float, timestamp: datetime):
+        self.current_price = close_price
 
-        signal = self.dsl_executor.process_price_update(price, timestamp)
+        signal = self.dsl_executor.process_candle_close(close_price, timestamp)
 
         if signal and signal.signal_type != "NEUTRAL":
             self.signal_history.append(signal)
             self.stats["total_signals"] += 1
 
-            logger.info(f"🚨 NEW SIGNAL: {signal.signal_type} {signal.strength} @ ${price:.2f}")
+            logger.info(f"🚨 NEW SIGNAL: {signal.signal_type} {signal.strength} @ ${close_price:.2f}")
 
             # Broadcast to all connected WebSocket clients
             signal_data = {
                 "type": "signal",
                 "data": asdict(signal),
                 "stats": self.stats,
-                "current_price": price
+                "current_price": close_price
             }
 
             await self._broadcast(signal_data)
@@ -515,7 +529,9 @@ async def get_dashboard():
     </div>
 
     <script>
-        const ws = new WebSocket(`ws://${window.location.host}/ws/signals`);
+        // Use wss:// for HTTPS deployments (like DigitalOcean), ws:// for local development
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/signals`);
         const statusEl = document.getElementById('connection-status');
         const priceEl = document.getElementById('current-price');
         const signalListEl = document.getElementById('signal-list');
@@ -633,7 +649,7 @@ async def startup_event():
 
     logger.info("🚀 Starting Real-time Trading Signal System")
 
-    deribit_client = DeribitWebSocketClient(signal_manager.process_price_update)
+    deribit_client = DeribitWebSocketClient(signal_manager.process_candle_close)
 
     # Start Deribit connection in background
     asyncio.create_task(start_deribit_connection())
