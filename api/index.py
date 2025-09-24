@@ -438,16 +438,18 @@ signal_manager = SignalManager()
 deribit_client = None
 
 # ==================== WEBSOCKET ENDPOINTS ====================
+# WebSockets commented out for Vercel compatibility
+# Vercel serverless functions have limited WebSocket support
 
-@app.websocket("/ws/signals")
-async def websocket_signals(websocket: WebSocket):
-    await signal_manager.connect_websocket(websocket)
-    try:
-        while True:
-            # Keep connection alive
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        signal_manager.disconnect_websocket(websocket)
+# @app.websocket("/ws/signals")
+# async def websocket_signals(websocket: WebSocket):
+#     await signal_manager.connect_websocket(websocket)
+#     try:
+#         while True:
+#             # Keep connection alive
+#             await websocket.receive_text()
+#     except WebSocketDisconnect:
+#         signal_manager.disconnect_websocket(websocket)
 
 # ==================== REST ENDPOINTS ====================
 
@@ -515,34 +517,38 @@ async def get_dashboard():
     </div>
 
     <script>
-        const ws = new WebSocket('ws://localhost:8000/ws/signals');
+        // WebSocket functionality disabled for Vercel compatibility
+        // Using REST API polling instead
         const statusEl = document.getElementById('connection-status');
         const priceEl = document.getElementById('current-price');
         const signalListEl = document.getElementById('signal-list');
 
-        ws.onopen = function() {
-            statusEl.textContent = 'Connected';
-            statusEl.className = 'status connected';
-        };
+        statusEl.textContent = 'API Mode';
+        statusEl.className = 'status connected';
 
-        ws.onclose = function() {
-            statusEl.textContent = 'Disconnected';
-            statusEl.className = 'status disconnected';
-        };
+        // Poll for updates every 10 seconds
+        async function fetchUpdates() {
+            try {
+                const response = await fetch('/api/signals');
+                const data = await response.json();
 
-        ws.onmessage = function(event) {
-            const message = JSON.parse(event.data);
+                updatePrice(data.current_price || 0);
+                updateStats(data.stats);
 
-            if (message.type === 'signal') {
-                addSignal(message.data);
-                updateStats(message.stats);
-                updatePrice(message.current_price);
-            } else if (message.type === 'init') {
-                updatePrice(message.data.current_price);
-                updateStats(message.data.stats);
-                message.data.signal_history.forEach(addSignal);
+                // Clear and repopulate signals
+                signalListEl.innerHTML = '';
+                data.signals.slice(-10).reverse().forEach(addSignal);
+
+            } catch (error) {
+                console.error('Failed to fetch updates:', error);
+                statusEl.textContent = 'API Error';
+                statusEl.className = 'status disconnected';
             }
-        };
+        }
+
+        // Initial load and periodic updates
+        fetchUpdates();
+        setInterval(fetchUpdates, 10000);
 
         function updatePrice(price) {
             priceEl.textContent = `$${price.toFixed(2)}`;
@@ -597,12 +603,7 @@ async def get_dashboard():
             }
         }
 
-        // Keep WebSocket connection alive
-        setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send('ping');
-            }
-        }, 30000);
+        // Removed WebSocket ping functionality
     </script>
 </body>
 </html>
@@ -626,41 +627,8 @@ async def get_status():
     }
 
 # ==================== STARTUP/SHUTDOWN ====================
-
-@app.on_event("startup")
-async def startup_event():
-    global deribit_client
-
-    logger.info("🚀 Starting Real-time Trading Signal System")
-
-    deribit_client = DeribitWebSocketClient(signal_manager.process_price_update)
-
-    # Start Deribit connection in background
-    asyncio.create_task(start_deribit_connection())
-
-async def start_deribit_connection():
-    global deribit_client
-
-    while True:
-        try:
-            if not deribit_client.is_connected:
-                await deribit_client.connect()
-                if deribit_client.is_connected:
-                    await deribit_client.listen()
-        except Exception as e:
-            logger.error(f"Deribit connection error: {e}")
-
-        # Reconnect after 5 seconds if disconnected
-        await asyncio.sleep(5)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global deribit_client
-
-    logger.info("🛑 Shutting down Real-time Trading Signal System")
-
-    if deribit_client:
-        await deribit_client.disconnect()
+# Removed startup/shutdown events for Vercel compatibility
+# Vercel serverless functions don't support persistent connections
 
 # For Vercel deployment
 handler = app
