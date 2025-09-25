@@ -542,7 +542,7 @@ class DeribitWebSocketClient:
                 "id": 1,
                 "method": "public/subscribe",
                 "params": {
-                    "channels": ["chart.trades.ETH-PERPETUAL.30"]
+                    "channels": ["chart.trades.ETH-PERPETUAL.1800000"]
                 }
             }
 
