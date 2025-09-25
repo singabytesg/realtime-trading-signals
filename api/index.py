@@ -20,6 +20,7 @@ from datetime import timedelta
 import aiosqlite
 import os
 from pathlib import Path
+import aiohttp
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -602,6 +603,7 @@ class SignalManager:
         self.trade_history: List[TradeExecution] = []
         self.current_price = 0.0
         self.persistent_log_manager = PersistentLogManager()
+        self.historical_data_loaded = False
         self.stats = {
             "total_signals": 0,
             "active_trades": 0,
@@ -679,6 +681,67 @@ class SignalManager:
 
         # Schedule the async operation
         asyncio.create_task(_add_log_async())
+
+    async def fetch_historical_data(self, hours_back: int = 48):
+        """Fetch historical 30-min candles from Deribit to populate indicators"""
+        if self.historical_data_loaded:
+            return
+
+        self.add_log("🔄 Fetching historical data to initialize indicators...", "info")
+
+        try:
+            # Calculate end time (now) and start time
+            end_time = int(datetime.now().timestamp() * 1000)
+            start_time = end_time - (hours_back * 60 * 60 * 1000)
+
+            url = "https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
+            params = {
+                "instrument_name": "ETH-PERPETUAL",
+                "start_timestamp": start_time,
+                "end_timestamp": end_time,
+                "resolution": "30"  # 30-minute candles
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+
+                        if "result" in data and data["result"]:
+                            result = data["result"]
+                            candles_count = len(result.get("close", []))
+
+                            self.add_log(f"📊 Retrieved {candles_count} historical 30-min candles", "info")
+
+                            # Process historical candles (oldest first)
+                            for i in range(candles_count):
+                                timestamp_ms = result["ticks"][i]
+                                close_price = result["close"][i]
+                                candle_time = datetime.fromtimestamp(timestamp_ms / 1000)
+
+                                # Add to price history without generating signals
+                                self.dsl_executor.price_history.append(close_price)
+
+                                if i % 10 == 0:  # Log every 10th candle
+                                    self.add_log(f"   📈 Loaded candle {i+1}/{candles_count}: ${close_price:.2f} at {candle_time.strftime('%m/%d %H:%M')}", "info")
+
+                            self.current_price = result["close"][-1]  # Set latest price
+                            self.historical_data_loaded = True
+
+                            self.add_log(f"✅ Historical data loaded! Price history: {len(self.dsl_executor.price_history)} candles", "info")
+                            self.add_log(f"💰 Current ETH price: ${self.current_price:.2f}", "info")
+                            self.add_log("🎯 Ready for live signal generation!", "info")
+
+                            return True
+                        else:
+                            self.add_log("❌ No historical data returned from Deribit", "error")
+                    else:
+                        self.add_log(f"❌ Failed to fetch historical data: HTTP {response.status}", "error")
+
+        except Exception as e:
+            self.add_log(f"❌ Error fetching historical data: {str(e)}", "error")
+
+        return False
 
 # ==================== GLOBAL INSTANCES ====================
 
@@ -978,6 +1041,9 @@ async def startup_event():
     # Start Deribit connection in background
     asyncio.create_task(start_deribit_connection())
 
+    # Fetch historical data after 1 minute delay
+    asyncio.create_task(delayed_historical_data_fetch())
+
 async def start_deribit_connection():
     global deribit_client
 
@@ -992,6 +1058,20 @@ async def start_deribit_connection():
 
         # Reconnect after 5 seconds if disconnected
         await asyncio.sleep(5)
+
+async def delayed_historical_data_fetch():
+    """Fetch historical data after 1 minute delay to allow system startup"""
+    await asyncio.sleep(60)  # Wait 1 minute
+
+    signal_manager.add_log("⏰ Starting scheduled historical data fetch (1 minute post-startup)", "info")
+
+    success = await signal_manager.fetch_historical_data()
+
+    if success and len(signal_manager.dsl_executor.price_history) >= 20:
+        # Test DSL processing with current price
+        signal_manager.add_log("🧪 Testing DSL processing with loaded data...", "info")
+        current_time = datetime.now()
+        await signal_manager.process_candle_close(signal_manager.current_price, current_time)
 
 @app.on_event("shutdown")
 async def shutdown_event():
