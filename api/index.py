@@ -17,6 +17,9 @@ import numpy as np
 from dataclasses import dataclass, asdict
 from collections import deque
 from datetime import timedelta
+import aiosqlite
+import os
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -44,6 +47,140 @@ class WebLogger:
 
 # Will be initialized after signal_manager is created
 web_logger = None
+
+class PersistentLogManager:
+    """Manages logs with both memory cache and database persistence"""
+
+    def __init__(self, db_path: str = "/app/data/logs.db", max_memory_logs: int = 100):
+        self.db_path = db_path
+        self.max_memory_logs = max_memory_logs
+        self.memory_logs: deque = deque(maxlen=max_memory_logs)
+        self.batch_logs: List = []
+        self.batch_size = 10
+        self.last_batch_time = datetime.now()
+
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+    async def initialize_database(self):
+        """Create database tables if they don't exist"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    log_type TEXT DEFAULT 'info',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC)
+            ''')
+            await db.commit()
+
+    async def load_recent_logs(self, limit: int = 100):
+        """Load recent logs from database into memory on startup"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute('''
+                    SELECT timestamp, message, log_type, created_at
+                    FROM logs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                ''', (limit,)) as cursor:
+                    rows = await cursor.fetchall()
+
+                    # Add to memory in reverse order (oldest first)
+                    for row in reversed(rows):
+                        log_entry = {
+                            "timestamp": row[0],
+                            "message": row[1],
+                            "log_type": row[2] or 'info'
+                        }
+                        self.memory_logs.append(log_entry)
+
+            if rows:
+                logger.info(f"Loaded {len(rows)} logs from database")
+        except Exception as e:
+            logger.error(f"Error loading logs from database: {e}")
+
+    async def add_log(self, message: str, log_type: str = 'info'):
+        """Add log to both memory and batch for database"""
+        log_entry = {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "message": message,
+            "log_type": log_type
+        }
+
+        # Add to memory immediately
+        self.memory_logs.append(log_entry)
+
+        # Add to batch for database persistence
+        self.batch_logs.append(log_entry)
+
+        # Check if we should flush to database
+        await self._maybe_flush_batch()
+
+        return log_entry
+
+    async def _maybe_flush_batch(self):
+        """Flush batch to database if batch is full or enough time has passed"""
+        now = datetime.now()
+        time_since_last = (now - self.last_batch_time).total_seconds()
+
+        if len(self.batch_logs) >= self.batch_size or time_since_last >= 30:
+            await self._flush_batch()
+
+    async def _flush_batch(self):
+        """Write batch logs to database"""
+        if not self.batch_logs:
+            return
+
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                batch_data = [
+                    (log['timestamp'], log['message'], log['log_type'])
+                    for log in self.batch_logs
+                ]
+
+                await db.executemany('''
+                    INSERT INTO logs (timestamp, message, log_type)
+                    VALUES (?, ?, ?)
+                ''', batch_data)
+                await db.commit()
+
+                logger.debug(f"Saved {len(batch_data)} logs to database")
+
+            self.batch_logs.clear()
+            self.last_batch_time = datetime.now()
+
+            # Cleanup old logs periodically
+            await self._cleanup_old_logs()
+
+        except Exception as e:
+            logger.error(f"Error saving logs to database: {e}")
+
+    async def _cleanup_old_logs(self):
+        """Remove old logs to prevent database bloat"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Keep only last 1000 logs
+                await db.execute('''
+                    DELETE FROM logs
+                    WHERE id NOT IN (
+                        SELECT id FROM logs
+                        ORDER BY created_at DESC
+                        LIMIT 1000
+                    )
+                ''')
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Error cleaning up old logs: {e}")
+
+    def get_memory_logs(self):
+        """Get logs from memory cache"""
+        return list(self.memory_logs)
 
 app = FastAPI(title="Real-time Trading Signals", version="1.0.0")
 
@@ -464,7 +601,7 @@ class SignalManager:
         self.signal_history: List[TradingSignal] = []
         self.trade_history: List[TradeExecution] = []
         self.current_price = 0.0
-        self.logs: deque = deque(maxlen=100)  # Store last 100 log messages
+        self.persistent_log_manager = PersistentLogManager()
         self.stats = {
             "total_signals": 0,
             "active_trades": 0,
@@ -504,7 +641,7 @@ class SignalManager:
                 "current_price": self.current_price,
                 "signal_history": [asdict(s) for s in self.signal_history[-10:]],
                 "stats": self.stats,
-                "logs": list(self.logs)
+                "logs": self.persistent_log_manager.get_memory_logs()
             }
         }
         await websocket.send_text(json.dumps(initial_data, default=str))
@@ -530,19 +667,18 @@ class SignalManager:
         for connection in disconnected:
             self.active_connections.remove(connection)
 
-    def add_log(self, message: str):
+    def add_log(self, message: str, log_type: str = 'info'):
         """Add a log message and broadcast to connected clients"""
-        log_entry = {
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "message": message
-        }
-        self.logs.append(log_entry)
+        async def _add_log_async():
+            log_entry = await self.persistent_log_manager.add_log(message, log_type)
+            # Broadcast log to connected clients
+            await self._broadcast({
+                "type": "log",
+                "data": log_entry
+            })
 
-        # Broadcast log to connected clients
-        asyncio.create_task(self._broadcast({
-            "type": "log",
-            "data": log_entry
-        }))
+        # Schedule the async operation
+        asyncio.create_task(_add_log_async())
 
 # ==================== GLOBAL INSTANCES ====================
 
@@ -829,6 +965,14 @@ async def startup_event():
 
     logger.info("🚀 Starting Real-time Trading Signal System")
 
+    # Initialize persistent logging system
+    await signal_manager.persistent_log_manager.initialize_database()
+    await signal_manager.persistent_log_manager.load_recent_logs()
+
+    # Add system startup log
+    signal_manager.add_log("🚀 System restarted - Real-time Trading Signal System started", "info")
+    signal_manager.add_log("📚 Loaded previous logs from database", "info")
+
     deribit_client = DeribitWebSocketClient(signal_manager.process_candle_close)
 
     # Start Deribit connection in background
@@ -854,6 +998,10 @@ async def shutdown_event():
     global deribit_client
 
     logger.info("🛑 Shutting down Real-time Trading Signal System")
+
+    # Flush any remaining logs to database
+    signal_manager.add_log("🛑 System shutting down - saving final logs", "info")
+    await signal_manager.persistent_log_manager._flush_batch()
 
     if deribit_client:
         await deribit_client.disconnect()

@@ -17,6 +17,7 @@ services:
       start_period: 40s
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.realtime-signals.rule=Host(`your-domain.com`)"
@@ -24,3 +25,4 @@ services:
 
 volumes:
   logs:
+  data:
