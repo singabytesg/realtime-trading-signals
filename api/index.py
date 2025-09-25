@@ -1044,6 +1044,9 @@ async def startup_event():
     # Fetch historical data after 1 minute delay
     asyncio.create_task(delayed_historical_data_fetch())
 
+    # Start hardcoded 30-minute interval fetcher as backup
+    asyncio.create_task(interval_candle_fetcher())
+
 async def start_deribit_connection():
     global deribit_client
 
@@ -1072,6 +1075,77 @@ async def delayed_historical_data_fetch():
         signal_manager.add_log("🧪 Testing DSL processing with loaded data...", "info")
         current_time = datetime.now()
         await signal_manager.process_candle_close(signal_manager.current_price, current_time)
+
+async def interval_candle_fetcher():
+    """Fetch latest candle every 30 minutes as reliable backup to WebSocket"""
+    # Wait 2 minutes after startup to let initial setup complete
+    await asyncio.sleep(120)
+
+    signal_manager.add_log("🔄 Starting 30-minute interval candle fetcher", "info")
+
+    while True:
+        try:
+            # Calculate next 30-minute boundary
+            now = datetime.now()
+            minutes_past_hour = now.minute
+            minutes_to_next_30min = 30 - (minutes_past_hour % 30)
+
+            if minutes_to_next_30min == 30:
+                minutes_to_next_30min = 0  # We're exactly on a 30-min boundary
+
+            # Wait until next 30-minute mark, then add 1 minute buffer for candle completion
+            wait_seconds = (minutes_to_next_30min * 60) + 60
+
+            signal_manager.add_log(f"⏳ Next candle fetch in {minutes_to_next_30min + 1} minutes", "info")
+            await asyncio.sleep(wait_seconds)
+
+            # Fetch latest candle from Deribit
+            signal_manager.add_log("🎯 Fetching latest 30-min candle...", "info")
+
+            end_time = int(datetime.now().timestamp() * 1000)
+            start_time = end_time - (2 * 60 * 60 * 1000)  # Last 2 hours to get latest candle
+
+            url = "https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
+            params = {
+                "instrument_name": "ETH-PERPETUAL",
+                "start_timestamp": start_time,
+                "end_timestamp": end_time,
+                "resolution": "30"
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+
+                        if "result" in data and data["result"]:
+                            result = data["result"]
+
+                            # Get the latest candle (last in array)
+                            if result.get("close") and len(result["close"]) > 0:
+                                latest_close = result["close"][-1]
+                                latest_timestamp_ms = result["ticks"][-1]
+                                candle_time = datetime.fromtimestamp(latest_timestamp_ms / 1000)
+
+                                signal_manager.add_log("=" * 80, "info")
+                                signal_manager.add_log("📊 INTERVAL FETCH - NEW 30-MIN CANDLE", "info")
+                                signal_manager.add_log(f"   📅 Time: {candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}", "info")
+                                signal_manager.add_log(f"   💰 Close Price: ${latest_close:.2f}", "info")
+                                signal_manager.add_log(f"   🔄 Processing DSL strategy...", "info")
+
+                                # Process the candle
+                                await signal_manager.process_candle_close(latest_close, candle_time)
+                            else:
+                                signal_manager.add_log("❌ No candle data in response", "error")
+                        else:
+                            signal_manager.add_log("❌ Invalid response format from Deribit", "error")
+                    else:
+                        signal_manager.add_log(f"❌ Failed to fetch candle: HTTP {response.status}", "error")
+
+        except Exception as e:
+            signal_manager.add_log(f"❌ Error in interval fetcher: {str(e)}", "error")
+            # Wait 5 minutes before retry on error
+            await asyncio.sleep(300)
 
 @app.on_event("shutdown")
 async def shutdown_event():
