@@ -22,6 +22,29 @@ from datetime import timedelta
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class WebLogger:
+    """Custom logger that captures logs and sends them to web interface"""
+    def __init__(self, signal_manager_ref=None):
+        self.signal_manager_ref = signal_manager_ref
+
+    def info(self, message):
+        logger.info(message)
+        if self.signal_manager_ref and hasattr(self.signal_manager_ref, 'add_log'):
+            self.signal_manager_ref.add_log(message)
+
+    def error(self, message):
+        logger.error(message)
+        if self.signal_manager_ref and hasattr(self.signal_manager_ref, 'add_log'):
+            self.signal_manager_ref.add_log(f"ERROR: {message}")
+
+    def warning(self, message):
+        logger.warning(message)
+        if self.signal_manager_ref and hasattr(self.signal_manager_ref, 'add_log'):
+            self.signal_manager_ref.add_log(f"WARNING: {message}")
+
+# Will be initialized after signal_manager is created
+web_logger = None
+
 app = FastAPI(title="Real-time Trading Signals", version="1.0.0")
 
 # ==================== CORE MODELS ====================
@@ -224,15 +247,18 @@ class SimpleDSLExecutor:
     def process_candle_close(self, close_price: float, timestamp: datetime) -> Optional[TradingSignal]:
         self.price_history.append(close_price)
 
-        logger.info(f"   📝 Added price ${close_price:.2f} to history. Total candles: {len(self.price_history)}")
+        if web_logger:
+            web_logger.info(f"   📝 Added price ${close_price:.2f} to history. Total candles: {len(self.price_history)}")
 
         if len(self.price_history) < 20:
-            logger.info(f"   ⏳ Not enough candles for analysis. Need 20, have {len(self.price_history)}. Skipping...")
-            logger.info("=" * 80)
+            if web_logger:
+                web_logger.info(f"   ⏳ Not enough candles for analysis. Need 20, have {len(self.price_history)}. Skipping...")
+                web_logger.info("=" * 80)
             return None
 
         # Calculate indicators
-        logger.info(f"   🧮 Calculating technical indicators...")
+        if web_logger:
+            web_logger.info(f"   🧮 Calculating technical indicators...")
 
         sma_short = self.indicators.sma(self.price_history, self.winning_strategy["constants"]["sma_short_period"])
         sma_long = self.indicators.sma(self.price_history, self.winning_strategy["constants"]["sma_long_period"])
@@ -243,18 +269,20 @@ class SimpleDSLExecutor:
         current_price = close_price
 
         # Log all calculated indicators
-        logger.info(f"   📊 INDICATORS CALCULATED:")
-        logger.info(f"      • Current Price: ${current_price:.2f}")
-        logger.info(f"      • SMA Short (15): ${sma_short:.2f}")
-        logger.info(f"      • SMA Long (20): ${sma_long:.2f}")
-        logger.info(f"      • RSI: {rsi:.1f}")
-        logger.info(f"      • MACD Line: {macd_data['macd']:.4f}")
-        logger.info(f"      • MACD Signal: {macd_data['signal']:.4f}")
-        logger.info(f"      • MACD Histogram: {macd_data['histogram']:.4f}")
-        logger.info(f"      • Volatility: {volatility:.2f}%")
+        if web_logger:
+            web_logger.info(f"   📊 INDICATORS CALCULATED:")
+            web_logger.info(f"      • Current Price: ${current_price:.2f}")
+            web_logger.info(f"      • SMA Short (15): ${sma_short:.2f}")
+            web_logger.info(f"      • SMA Long (20): ${sma_long:.2f}")
+            web_logger.info(f"      • RSI: {rsi:.1f}")
+            web_logger.info(f"      • MACD Line: {macd_data['macd']:.4f}")
+            web_logger.info(f"      • MACD Signal: {macd_data['signal']:.4f}")
+            web_logger.info(f"      • MACD Histogram: {macd_data['histogram']:.4f}")
+            web_logger.info(f"      • Volatility: {volatility:.2f}%")
 
         # Check each rule
-        logger.info(f"   🔍 Evaluating {len(self.winning_strategy['rules'])} DSL rules...")
+        if web_logger:
+            web_logger.info(f"   🔍 Evaluating {len(self.winning_strategy['rules'])} DSL rules...")
 
         for i, rule in enumerate(self.winning_strategy["rules"], 1):
             indicators_dict = {
@@ -268,14 +296,16 @@ class SimpleDSLExecutor:
                 "volatility": volatility
             }
 
-            logger.info(f"   📋 Rule {i}: '{rule['name']}'")
+            if web_logger:
+                web_logger.info(f"   📋 Rule {i}: '{rule['name']}'")
 
             # Log each condition check
             rule_passed = True
             for j, condition in enumerate(rule["conditions"], 1):
                 condition_result = self._evaluate_condition(condition, indicators_dict)
                 status = "✅ PASS" if condition_result else "❌ FAIL"
-                logger.info(f"      Condition {j}: {condition} → {status}")
+                if web_logger:
+                    web_logger.info(f"      Condition {j}: {condition} → {status}")
                 if not condition_result:
                     rule_passed = False
 
@@ -291,12 +321,13 @@ class SimpleDSLExecutor:
                     high_vol_threshold=self.winning_strategy["constants"]["high_vol_threshold"]
                 )
 
-                logger.info(f"   🎯 SIGNAL GENERATED!")
-                logger.info(f"      • Rule: {rule['name']}")
-                logger.info(f"      • Signal: {rule['signal']['type']} (strength: {rule['signal']['strength']})")
-                logger.info(f"      • Expected Move: {expected_move_pct:.2f}%")
-                logger.info(f"      • Optimal Instrument: {optimal_instrument}")
-                logger.info("=" * 80)
+                if web_logger:
+                    web_logger.info(f"   🎯 SIGNAL GENERATED!")
+                    web_logger.info(f"      • Rule: {rule['name']}")
+                    web_logger.info(f"      • Signal: {rule['signal']['type']} (strength: {rule['signal']['strength']})")
+                    web_logger.info(f"      • Expected Move: {expected_move_pct:.2f}%")
+                    web_logger.info(f"      • Optimal Instrument: {optimal_instrument}")
+                    web_logger.info("=" * 80)
 
                 return TradingSignal(
                     timestamp=timestamp,
@@ -309,10 +340,12 @@ class SimpleDSLExecutor:
                     expected_move=expected_move_pct
                 )
             else:
-                logger.info(f"      → Rule failed. Moving to next rule.")
+                if web_logger:
+                    web_logger.info(f"      → Rule failed. Moving to next rule.")
 
-        logger.info(f"   ❌ No signals generated. All {len(self.winning_strategy['rules'])} rules failed.")
-        logger.info("=" * 80)
+        if web_logger:
+            web_logger.info(f"   ❌ No signals generated. All {len(self.winning_strategy['rules'])} rules failed.")
+            web_logger.info("=" * 80)
         return None
 
     def _evaluate_rule(self, rule: Dict, indicators: Dict) -> bool:
@@ -400,12 +433,13 @@ class DeribitWebSocketClient:
                         candle_time = datetime.fromtimestamp(timestamp_ms / 1000)
 
                         # Detailed candle logging
-                        logger.info("=" * 80)
-                        logger.info(f"📊 NEW 30-MIN CANDLE RECEIVED")
-                        logger.info(f"   📅 Time: {candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                        logger.info(f"   💰 OHLC: Open=${open_price:.2f} | High=${high:.2f} | Low=${low:.2f} | Close=${close_price:.2f}")
-                        logger.info(f"   📈 Volume: {volume:,.0f}")
-                        logger.info(f"   🔄 Processing DSL strategy...")
+                        if web_logger:
+                            web_logger.info("=" * 80)
+                            web_logger.info(f"📊 NEW 30-MIN CANDLE RECEIVED")
+                            web_logger.info(f"   📅 Time: {candle_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                            web_logger.info(f"   💰 OHLC: Open=${open_price:.2f} | High=${high:.2f} | Low=${low:.2f} | Close=${close_price:.2f}")
+                            web_logger.info(f"   📈 Volume: {volume:,.0f}")
+                            web_logger.info(f"   🔄 Processing DSL strategy...")
 
                         await self.signal_callback(close_price, candle_time)
 
@@ -430,6 +464,7 @@ class SignalManager:
         self.signal_history: List[TradingSignal] = []
         self.trade_history: List[TradeExecution] = []
         self.current_price = 0.0
+        self.logs: deque = deque(maxlen=100)  # Store last 100 log messages
         self.stats = {
             "total_signals": 0,
             "active_trades": 0,
@@ -468,7 +503,8 @@ class SignalManager:
             "data": {
                 "current_price": self.current_price,
                 "signal_history": [asdict(s) for s in self.signal_history[-10:]],
-                "stats": self.stats
+                "stats": self.stats,
+                "logs": list(self.logs)
             }
         }
         await websocket.send_text(json.dumps(initial_data, default=str))
@@ -494,10 +530,27 @@ class SignalManager:
         for connection in disconnected:
             self.active_connections.remove(connection)
 
+    def add_log(self, message: str):
+        """Add a log message and broadcast to connected clients"""
+        log_entry = {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "message": message
+        }
+        self.logs.append(log_entry)
+
+        # Broadcast log to connected clients
+        asyncio.create_task(self._broadcast({
+            "type": "log",
+            "data": log_entry
+        }))
+
 # ==================== GLOBAL INSTANCES ====================
 
 signal_manager = SignalManager()
 deribit_client = None
+
+# Initialize web logger with signal manager reference
+web_logger = WebLogger(signal_manager)
 
 # ==================== WEBSOCKET ENDPOINTS ====================
 
@@ -538,6 +591,17 @@ async def get_dashboard():
         .status.connected { background: #4CAF50; }
         .status.disconnected { background: #f44336; }
         .price-display { font-size: 32px; font-weight: bold; color: #2196F3; }
+        .log-controls { margin-bottom: 15px; }
+        .log-controls button { padding: 8px 16px; margin-right: 10px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .log-controls button:hover { background: #1976D2; }
+        #log-container { max-height: 400px; overflow-y: auto; background: #1e1e1e; border-radius: 4px; padding: 10px; }
+        .log-entry { margin: 2px 0; padding: 4px 8px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.4; }
+        .log-entry.info { color: #ffffff; }
+        .log-entry.candle { color: #4CAF50; background: rgba(76, 175, 80, 0.1); }
+        .log-entry.indicator { color: #2196F3; background: rgba(33, 150, 243, 0.1); }
+        .log-entry.rule { color: #FF9800; background: rgba(255, 152, 0, 0.1); }
+        .log-entry.signal { color: #f44336; background: rgba(244, 67, 54, 0.1); font-weight: bold; }
+        .log-entry.error { color: #f44336; background: rgba(244, 67, 54, 0.2); }
     </style>
 </head>
 <body>
@@ -574,6 +638,19 @@ async def get_dashboard():
                 <p>No signals yet...</p>
             </div>
         </div>
+
+        <div class="signals">
+            <h2>🔍 Real-time Processing Logs</h2>
+            <div class="log-controls">
+                <button id="clear-logs">Clear Logs</button>
+                <button id="toggle-auto-scroll">Auto-scroll: ON</button>
+            </div>
+            <div id="log-container">
+                <div id="log-list">
+                    <p class="log-entry info">System starting... waiting for data...</p>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -583,6 +660,9 @@ async def get_dashboard():
         const statusEl = document.getElementById('connection-status');
         const priceEl = document.getElementById('current-price');
         const signalListEl = document.getElementById('signal-list');
+        const logListEl = document.getElementById('log-list');
+        const logContainerEl = document.getElementById('log-container');
+        let autoScroll = true;
 
         ws.onopen = function() {
             statusEl.textContent = 'Connected';
@@ -605,6 +685,12 @@ async def get_dashboard():
                 updatePrice(message.data.current_price);
                 updateStats(message.data.stats);
                 message.data.signal_history.forEach(addSignal);
+                // Load initial logs if any
+                if (message.data.logs) {
+                    message.data.logs.forEach(addLog);
+                }
+            } else if (message.type === 'log') {
+                addLog(message.data);
             }
         };
 
@@ -660,6 +746,52 @@ async def get_dashboard():
                 signalListEl.removeChild(signalListEl.lastChild);
             }
         }
+
+        function addLog(logData) {
+            const logEl = document.createElement('div');
+
+            // Determine log type for styling
+            let logClass = 'info';
+            const msg = logData.message.toLowerCase();
+
+            if (msg.includes('new 30-min candle') || msg.includes('ohlc:')) {
+                logClass = 'candle';
+            } else if (msg.includes('indicators calculated') || msg.includes('sma') || msg.includes('rsi') || msg.includes('macd')) {
+                logClass = 'indicator';
+            } else if (msg.includes('rule') || msg.includes('condition') || msg.includes('evaluating')) {
+                logClass = 'rule';
+            } else if (msg.includes('signal generated') || msg.includes('no signals generated')) {
+                logClass = 'signal';
+            } else if (msg.includes('error') || msg.includes('failed')) {
+                logClass = 'error';
+            }
+
+            logEl.className = `log-entry ${logClass}`;
+            logEl.innerHTML = `[${logData.timestamp}] ${logData.message}`;
+
+            logListEl.appendChild(logEl);
+
+            // Keep only last 200 log entries
+            while (logListEl.children.length > 200) {
+                logListEl.removeChild(logListEl.firstChild);
+            }
+
+            // Auto-scroll to bottom if enabled
+            if (autoScroll) {
+                logContainerEl.scrollTop = logContainerEl.scrollHeight;
+            }
+        }
+
+        // Log controls
+        document.getElementById('clear-logs').addEventListener('click', function() {
+            logListEl.innerHTML = '<p class="log-entry info">Logs cleared</p>';
+        });
+
+        document.getElementById('toggle-auto-scroll').addEventListener('click', function() {
+            autoScroll = !autoScroll;
+            this.textContent = `Auto-scroll: ${autoScroll ? 'ON' : 'OFF'}`;
+            this.style.background = autoScroll ? '#4CAF50' : '#f44336';
+        });
 
         // Keep WebSocket connection alive
         setInterval(() => {
